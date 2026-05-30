@@ -135,6 +135,17 @@ struct ChecksumEntry
 	u32 value;
 };
 
+// Snapshot of per-frame netplay quality metrics used by the bufferbloat
+// telemetry sidecar. Values are read without locking the network thread;
+// torn reads are acceptable because this data is for offline analysis only.
+struct SlippiNetplayQualitySample
+{
+	u64 ping_us[SLIPPI_REMOTE_PLAYER_MAX];
+	s32 last_frame_acked[SLIPPI_REMOTE_PLAYER_MAX];
+	s32 time_offset_us;
+	u8 remote_player_count;
+};
+
 class SlippiMatchInfo
 {
   public:
@@ -194,6 +205,7 @@ class SlippiNetplayClient
 	SlippiPlayerSelections GetSlippiRemoteChatMessage(bool isChatEnabled);
 	u8 GetSlippiRemoteSentChatMessage(bool isChatEnabled);
 	s32 CalcTimeOffsetUs();
+	SlippiNetplayQualitySample GetQualitySample();
 	bool IsWaitingForDesyncRecovery();
 	SlippiDesyncRecoveryResp GetDesyncRecoveryState();
 

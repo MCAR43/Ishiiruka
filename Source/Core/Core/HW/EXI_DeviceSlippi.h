@@ -6,6 +6,8 @@
 
 #include <SlippiLib/SlippiGame.h>
 
+#include <fstream>
+
 #include "Common/CommonTypes.h"
 #include "Common/FileUtil.h"
 #include "Core/HW/EXI_Device.h"
@@ -232,6 +234,16 @@ class CEXISlippi : public IEXIDevice
 
 	File::IOFile m_file;
 	std::vector<u8> m_payload;
+
+	// Bufferbloat telemetry sidecar (.slpnet.jsonl alongside .slp). One JSON
+	// line per online frame: per-player ping, last-acked frame, stall counters,
+	// time offset. Opened lazily on the first online frame so offline games
+	// don't get an empty sidecar.
+	std::ofstream m_stats_sidecar;
+	std::string m_stats_sidecar_path;
+	void openStatsSidecar();
+	void writeStatsSidecarRow(s32 frame, s32 finalizedFrame);
+	void closeStatsSidecar();
 
 	// online play stuff
 	u16 getRandomStage();

@@ -1600,6 +1600,19 @@ SlippiMatchInfo *SlippiNetplayClient::GetMatchInfo()
 	return &matchInfo;
 }
 
+SlippiNetplayQualitySample SlippiNetplayClient::GetQualitySample()
+{
+	SlippiNetplayQualitySample s{};
+	s.remote_player_count = m_remotePlayerCount;
+	for (int i = 0; i < SLIPPI_REMOTE_PLAYER_MAX; i++)
+	{
+		s.ping_us[i] = pingUs[i];
+		s.last_frame_acked[i] = lastFrameAcked[i];
+	}
+	s.time_offset_us = CalcTimeOffsetUs();
+	return s;
+}
+
 // return the smallest time offset among all remote players
 s32 SlippiNetplayClient::CalcTimeOffsetUs()
 {
