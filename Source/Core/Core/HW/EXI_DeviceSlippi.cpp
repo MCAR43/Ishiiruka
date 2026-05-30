@@ -598,6 +598,10 @@ void CEXISlippi::createNewFile()
 	std::string filepath = dirpath + DIR_SEP + generateFileName();
 	INFO_LOG(SLIPPI, "EXI_DeviceSlippi.cpp: Creating new replay file %s", filepath.c_str());
 
+	// Stash the path so the bufferbloat telemetry sidecar can be opened lazily
+	// from handleOnlineInputs once we know this is an online match.
+	m_stats_sidecar_path = filepath + ".net.jsonl";
+
 #ifdef _WIN32
 	m_file = File::IOFile(filepath, "wb", _SH_DENYWR);
 #else
@@ -637,6 +641,89 @@ void CEXISlippi::closeFile()
 	// If this is the end of the game end payload, reset the file so that we create a new one
 	m_file.Close();
 	m_file = nullptr;
+
+	// Defensive cleanup if the game ended without a CMD_RECEIVE_GAME_END
+	// (e.g. force-quit). The normal close happens in the CMD handler.
+	closeStatsSidecar();
+}
+
+void CEXISlippi::openStatsSidecar()
+{
+	if (m_stats_sidecar.is_open() || m_stats_sidecar_path.empty())
+		return;
+
+	m_stats_sidecar.open(m_stats_sidecar_path, std::ios::out | std::ios::trunc);
+	if (!m_stats_sidecar)
+	{
+		WARN_LOG(SLIPPI_ONLINE, "Could not open netplay stats sidecar %s",
+		         m_stats_sidecar_path.c_str());
+		return;
+	}
+
+	// Header row: schema version + per-match context. Wall-clock anchor lets
+	// the analysis pipeline align with tcpdump pcap timestamps.
+	u64 startUs = Common::Timer::GetTimeUs();
+	u8 localPort = slippi_netplay ? slippi_netplay->LocalPlayerPort() : 0xFF;
+	u8 remoteCount = matchmaking ? matchmaking->RemotePlayerCount() : 0;
+	u8 onlineDelay = (u8)SConfig::GetInstance().m_slippiOnlineDelay;
+	const std::string &matchId = recentMmResult.id;
+
+	m_stats_sidecar << "{\"type\":\"hdr\",\"v\":1"
+	                << ",\"start_us\":" << startUs
+	                << ",\"match_id\":\"" << matchId << "\""
+	                << ",\"local_port\":" << (int)localPort
+	                << ",\"remote_count\":" << (int)remoteCount
+	                << ",\"online_delay\":" << (int)onlineDelay
+	                << ",\"rb_max\":" << ROLLBACK_MAX_FRAMES
+	                << "}\n";
+}
+
+void CEXISlippi::writeStatsSidecarRow(s32 frame, s32 finalizedFrame)
+{
+	if (!slippi_netplay)
+		return;
+	if (!m_stats_sidecar.is_open())
+		openStatsSidecar();
+	if (!m_stats_sidecar)
+		return;
+
+	auto sample = slippi_netplay->GetQualitySample();
+	u64 t_us = Common::Timer::GetTimeUs();
+
+	m_stats_sidecar << "{\"t\":" << t_us
+	                << ",\"f\":" << frame
+	                << ",\"ff\":" << finalizedFrame
+	                << ",\"off\":" << sample.time_offset_us
+	                << ",\"ping\":[";
+	for (u8 i = 0; i < sample.remote_player_count; i++)
+	{
+		if (i)
+			m_stats_sidecar << ',';
+		m_stats_sidecar << sample.ping_us[i];
+	}
+	m_stats_sidecar << "],\"ack\":[";
+	for (u8 i = 0; i < sample.remote_player_count; i++)
+	{
+		if (i)
+			m_stats_sidecar << ',';
+		m_stats_sidecar << sample.last_frame_acked[i];
+	}
+	m_stats_sidecar << "],\"stall\":[";
+	for (u8 i = 0; i < sample.remote_player_count; i++)
+	{
+		if (i)
+			m_stats_sidecar << ',';
+		m_stats_sidecar << stallFrameCounts[i];
+	}
+	m_stats_sidecar << "]}\n";
+}
+
+void CEXISlippi::closeStatsSidecar()
+{
+	if (!m_stats_sidecar.is_open())
+		return;
+	m_stats_sidecar.flush();
+	m_stats_sidecar.close();
 }
 
 void CEXISlippi::prepareGameInfo(u8 *payload)
@@ -1302,6 +1389,9 @@ void CEXISlippi::handleOnlineInputs(u8 *payload)
 	}
 
 	prepareOpponentInputs(frame, shouldSkip);
+
+	// Per-frame netplay quality row for the bufferbloat sidecar.
+	writeStatsSidecarRow(frame, finalizedFrame);
 }
 
 bool CEXISlippi::shouldSkipOnlineFrame(s32 frame, s32 finalizedFrame)
@@ -3318,6 +3408,7 @@ void CEXISlippi::DMAWrite(u32 _uAddr, u32 _uSize)
 			m_slippiserver->write(&memPtr[bufLoc], payloadLen + 1);
 			m_slippiserver->endGame();
 			slprs_exi_device_reporter_push_replay_data(slprs_exi_device_ptr, &memPtr[bufLoc], payloadLen + 1);
+			closeStatsSidecar();
 			break;
 		case CMD_PREPARE_REPLAY:
 			// log.open("log.txt");
